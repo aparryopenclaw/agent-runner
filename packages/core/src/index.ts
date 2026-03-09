@@ -14,6 +14,10 @@ export { JsonFileStore } from "./stores/json-file.js";
 // Model Provider
 export { AISDKModelProvider } from "./model-provider.js";
 
+// MCP
+export { MCPClientManager } from "./mcp/client-manager.js";
+export type { MCPTool } from "./mcp/client-manager.js";
+
 // Errors
 export {
   AgentRunnerError,

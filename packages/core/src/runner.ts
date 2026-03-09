@@ -24,6 +24,8 @@ import { MemoryStore } from "./stores/memory.js";
 import { AISDKModelProvider } from "./model-provider.js";
 import { buildMessages, trimHistory } from "./message-builder.js";
 import { generateInvocationId } from "./utils/id.js";
+import { MCPClientManager } from "./mcp/client-manager.js";
+import type { MCPTool } from "./mcp/client-manager.js";
 import {
   AgentNotFoundError,
   InvocationCancelledError,
@@ -46,6 +48,8 @@ export class Runner {
   private logStore: LogStore;
   private modelProvider: ModelProvider;
   private toolRegistry: ToolRegistry;
+  private mcpManager: MCPClientManager | null = null;
+  private mcpInitPromise: Promise<void> | null = null;
   private config: RunnerConfig;
 
   /** Agents registered in code (not persisted to store) */
@@ -80,6 +84,23 @@ export class Runner {
         this.toolRegistry.register(tool);
       }
     }
+
+    // Initialize MCP client manager (lazy — connects on first use)
+    if (config.mcp?.servers && Object.keys(config.mcp.servers).length > 0) {
+      this.mcpManager = new MCPClientManager(config.mcp.servers);
+    }
+  }
+
+  /**
+   * Ensure MCP servers are connected. Called lazily on first invoke
+   * that needs MCP tools. Safe to call multiple times.
+   */
+  private async ensureMCPInitialized(): Promise<void> {
+    if (!this.mcpManager) return;
+    if (!this.mcpInitPromise) {
+      this.mcpInitPromise = this.mcpManager.initialize();
+    }
+    await this.mcpInitPromise;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -138,6 +159,45 @@ export class Runner {
   // Context (public API)
   // ═══════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════
+  // MCP (public API)
+  // ═══════════════════════════════════════════════════════════════════
+
+  get mcp() {
+    return {
+      /**
+       * Get connection status for all MCP servers.
+       */
+      status: () => {
+        if (!this.mcpManager) return [];
+        return this.mcpManager.getStatus();
+      },
+      /**
+       * Get status for a specific server.
+       */
+      serverStatus: (name: string) => {
+        if (!this.mcpManager) return null;
+        return this.mcpManager.getServerStatus(name);
+      },
+      /**
+       * Force initialization of MCP connections.
+       * Normally happens lazily on first invoke.
+       */
+      connect: async () => {
+        await this.ensureMCPInitialized();
+      },
+    };
+  }
+
+  /**
+   * Gracefully shut down the runner — closes MCP connections, flushes stores.
+   */
+  async shutdown(): Promise<void> {
+    if (this.mcpManager) {
+      await this.mcpManager.shutdown();
+    }
+  }
+
   get context() {
     return {
       get: (contextId: string) => this.contextStore.getContext(contextId),
@@ -162,6 +222,9 @@ export class Runner {
     });
 
     async function* generate(): AsyncGenerator<StreamEvent> {
+      // Ensure MCP servers are connected
+      await self.ensureMCPInitialized();
+
       const startTime = Date.now();
       const invocationId = generateInvocationId();
       const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -426,6 +489,9 @@ export class Runner {
    * Invoke an agent. This is the main entry point for running an agent.
    */
   async invoke(agentId: string, input: string, options: InvokeOptions = {}): Promise<InvokeResult> {
+    // Ensure MCP servers are connected before resolving tools
+    await this.ensureMCPInitialized();
+
     const startTime = Date.now();
     const invocationId = generateInvocationId();
     const agent = await this.resolveAgent(agentId);
@@ -638,7 +704,7 @@ export class Runner {
 
   /**
    * Resolve the tools available to an agent based on its tools[] references.
-   * Returns tool metadata for the model AND registers ephemeral agent-tools
+   * Returns tool metadata for the model AND registers ephemeral tools
    * in the registry so they can be executed during the invoke loop.
    */
   private resolveToolsForAgent(agent: AgentDefinition): Array<{
@@ -669,8 +735,60 @@ export class Runner {
         if (toolInfo) {
           resolved.push(toolInfo);
         }
+      } else if (ref.type === "mcp") {
+        const mcpTools = this.resolveMCPTools(ref.server, ref.tools);
+        resolved.push(...mcpTools);
       }
-      // TODO: MCP tool resolution (Phase 2)
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Resolve MCP tools from a server. Registers them in the tool registry
+   * as synthetic inline tools that proxy to the MCP server.
+   */
+  private resolveMCPTools(
+    serverName: string,
+    toolNames?: string[]
+  ): Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  }> {
+    if (!this.mcpManager) return [];
+
+    const mcpTools = this.mcpManager.getToolsFromServer(serverName, toolNames);
+    const resolved: Array<{
+      name: string;
+      description: string;
+      parameters: Record<string, unknown>;
+    }> = [];
+
+    for (const mcpTool of mcpTools) {
+      // Use a namespaced tool name to avoid collisions
+      const qualifiedName = `mcp__${serverName}__${mcpTool.name}`;
+
+      // Register as a synthetic tool in the registry if not already there
+      if (!this.toolRegistry.get(qualifiedName)) {
+        const { z } = require("zod");
+        const tool: ToolDefinition = {
+          name: qualifiedName,
+          description: mcpTool.description,
+          input: z.object({}).passthrough(), // Accept any input — MCP handles validation
+          async execute(input: unknown) {
+            return mcpTool.execute(input);
+          },
+        };
+        this.toolRegistry.register(tool);
+      }
+
+      resolved.push({
+        // Use the original tool name for the model (more natural)
+        name: qualifiedName,
+        description: mcpTool.description,
+        parameters: mcpTool.inputSchema,
+      });
     }
 
     return resolved;
