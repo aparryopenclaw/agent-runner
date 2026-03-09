@@ -10,6 +10,7 @@
  */
 
 import { parseArgs } from "node:util";
+import { createInterface } from "node:readline/promises";
 import { writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -23,6 +24,7 @@ Usage:
 Commands:
   init              Scaffold a new agent-runner project
   invoke <agentId>  Invoke an agent (requires agent-runner.config.ts)
+  playground <id>   Interactive REPL for testing an agent
   eval <agentId>    Run eval suite for an agent
   studio            Launch the Studio UI
 
@@ -38,6 +40,7 @@ Eval Options:
 Examples:
   agent-runner init
   agent-runner invoke greeter "Hello!"
+  agent-runner playground greeter
   agent-runner eval support --json
   agent-runner eval --all --threshold 0.8
   agent-runner studio
@@ -70,6 +73,9 @@ async function main() {
       break;
     case "eval":
       await cmdEval(args.slice(1));
+      break;
+    case "playground":
+      await cmdPlayground(args.slice(1));
       break;
     case "studio":
       await cmdStudio();
@@ -325,6 +331,135 @@ async function cmdEval(args: string[]) {
   } catch (error) {
     console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// playground — interactive REPL for testing an agent
+// ═══════════════════════════════════════════════════════════════════
+
+async function cmdPlayground(args: string[]) {
+  if (args.length < 1) {
+    console.error("Usage: agent-runner playground <agentId> [--session <id>] [--context <id>...]");
+    process.exit(1);
+  }
+
+  const agentId = args[0];
+  const filteredArgs = args.slice(1);
+
+  // Parse optional --session flag
+  let sessionId: string | undefined;
+  const sessIdx = filteredArgs.indexOf("--session");
+  if (sessIdx !== -1) {
+    sessionId = filteredArgs[sessIdx + 1];
+    filteredArgs.splice(sessIdx, 2);
+  }
+
+  // Parse optional --context flags (repeatable)
+  const contextIds: string[] = [];
+  let ctxIdx: number;
+  while ((ctxIdx = filteredArgs.indexOf("--context")) !== -1) {
+    contextIds.push(filteredArgs[ctxIdx + 1]);
+    filteredArgs.splice(ctxIdx, 2);
+  }
+
+  // Generate a session ID if not provided (for conversational continuity)
+  if (!sessionId) {
+    sessionId = `playground_${Date.now()}`;
+  }
+
+  const configPath = resolve(process.cwd(), "agent-runner.config.ts");
+  if (!existsSync(configPath)) {
+    console.error("❌ No agent-runner.config.ts found. Run `agent-runner init` first.");
+    process.exit(1);
+  }
+
+  let runner: any;
+  try {
+    const config = await import(configPath);
+    runner = config.default;
+    if (!runner?.invoke) {
+      console.error("❌ agent-runner.config.ts must export a Runner as default.");
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+
+  console.log(`\n  ⚡ agent-runner playground`);
+  console.log(`  Agent: ${agentId}`);
+  console.log(`  Session: ${sessionId}`);
+  if (contextIds.length > 0) {
+    console.log(`  Context: ${contextIds.join(", ")}`);
+  }
+  console.log(`  Type .exit or Ctrl+C to quit\n`);
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  let turnCount = 0;
+
+  try {
+    while (true) {
+      const input = await rl.question("\x1b[36myou ›\x1b[0m ");
+
+      if (!input.trim()) continue;
+      if (input.trim() === ".exit" || input.trim() === ".quit") break;
+
+      // Special commands
+      if (input.trim() === ".session") {
+        console.log(`  Session: ${sessionId}`);
+        continue;
+      }
+      if (input.trim() === ".new") {
+        sessionId = `playground_${Date.now()}`;
+        turnCount = 0;
+        console.log(`  ✨ New session: ${sessionId}\n`);
+        continue;
+      }
+      if (input.trim() === ".help") {
+        console.log(`  .exit     Quit the playground`);
+        console.log(`  .new      Start a new session`);
+        console.log(`  .session  Show current session ID`);
+        console.log(`  .help     Show this help\n`);
+        continue;
+      }
+
+      try {
+        const start = Date.now();
+        const result = await runner.invoke(agentId, input.trim(), {
+          sessionId,
+          contextIds: contextIds.length > 0 ? contextIds : undefined,
+        });
+        const elapsed = Date.now() - start;
+        turnCount++;
+
+        console.log(`\n\x1b[33m${agentId} ›\x1b[0m ${result.output}`);
+
+        // Show metadata in dim text
+        const parts = [
+          `${result.usage.totalTokens} tokens`,
+          `${elapsed}ms`,
+        ];
+        if (result.toolCalls.length > 0) {
+          parts.push(`${result.toolCalls.length} tool call${result.toolCalls.length > 1 ? "s" : ""}`);
+        }
+        console.log(`\x1b[2m  ${parts.join(" · ")}\x1b[0m\n`);
+      } catch (error) {
+        console.error(`\x1b[31m  Error: ${error instanceof Error ? error.message : String(error)}\x1b[0m\n`);
+      }
+    }
+  } finally {
+    rl.close();
+    console.log(`\n  👋 ${turnCount} turn${turnCount !== 1 ? "s" : ""} in session ${sessionId}\n`);
+
+    // Graceful shutdown
+    if (runner.shutdown) {
+      await runner.shutdown();
+    }
   }
 }
 

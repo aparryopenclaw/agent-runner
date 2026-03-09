@@ -469,6 +469,28 @@ process.on("SIGTERM", async () => {
 });
 ```
 
+## CLI Playground
+
+Test agents interactively in your terminal — conversational REPL with session support:
+
+```bash
+npx agent-runner playground greeter
+```
+
+```
+  ⚡ agent-runner playground
+  Agent: greeter
+  Session: playground_1741506000000
+  Type .exit or Ctrl+C to quit
+
+you › Hello!
+
+greeter › Hey there! Welcome — great to have you here.
+  42 tokens · 312ms
+```
+
+Commands: `.new` (new session), `.session` (show ID), `.exit` (quit). Sessions persist across turns for multi-turn testing.
+
 ## Studio
 
 Visual development UI for defining, testing, and debugging agents:
