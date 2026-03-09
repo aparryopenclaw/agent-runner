@@ -1,0 +1,289 @@
+import { describe, it, expect, vi } from "vitest";
+import { createRunner } from "../src/runner.js";
+import { defineAgent } from "../src/agent.js";
+import { defineTool } from "../src/tool.js";
+import { z } from "zod";
+import type { ModelProvider, GenerateTextOptions, GenerateTextResult } from "../src/types.js";
+
+/**
+ * Mock model provider that returns deterministic responses.
+ * Used for testing the runner without making real API calls.
+ */
+class MockModelProvider implements ModelProvider {
+  private responses: GenerateTextResult[];
+  private callIndex = 0;
+  public calls: GenerateTextOptions[] = [];
+
+  constructor(responses: GenerateTextResult | GenerateTextResult[]) {
+    this.responses = Array.isArray(responses) ? responses : [responses];
+  }
+
+  async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
+    this.calls.push(options);
+    const response = this.responses[this.callIndex] ?? this.responses[this.responses.length - 1];
+    this.callIndex++;
+    return response;
+  }
+}
+
+function mockResponse(text: string): GenerateTextResult {
+  return {
+    text,
+    usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+    finishReason: "stop",
+  };
+}
+
+describe("Runner", () => {
+  it("creates a runner with defaults", () => {
+    const runner = createRunner();
+    expect(runner).toBeDefined();
+    expect(runner.tools.list()).toEqual([]);
+  });
+
+  it("registers and invokes an agent", async () => {
+    const provider = new MockModelProvider(mockResponse("Hello from the agent!"));
+
+    const runner = createRunner({ modelProvider: provider });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "greeter",
+        name: "Greeter",
+        systemPrompt: "You are a friendly greeter.",
+        model: { provider: "openai", name: "gpt-4o-mini" },
+      })
+    );
+
+    const result = await runner.invoke("greeter", "Hi there!");
+
+    expect(result.output).toBe("Hello from the agent!");
+    expect(result.invocationId).toBeDefined();
+    expect(result.model).toBe("openai/gpt-4o-mini");
+    expect(result.usage.totalTokens).toBe(30);
+    expect(result.duration).toBeGreaterThanOrEqual(0);
+
+    // Verify the messages sent to the model
+    expect(provider.calls).toHaveLength(1);
+    const call = provider.calls[0];
+    expect(call.messages[0].role).toBe("system");
+    expect(call.messages[0].content).toBe("You are a friendly greeter.");
+    expect(call.messages[1].role).toBe("user");
+    expect(call.messages[1].content).toBe("Hi there!");
+  });
+
+  it("throws for unknown agent", async () => {
+    const runner = createRunner({
+      modelProvider: new MockModelProvider(mockResponse("")),
+    });
+
+    await expect(runner.invoke("nonexistent", "hi")).rejects.toThrow(
+      'Agent "nonexistent" not found'
+    );
+  });
+
+  it("supports session continuity", async () => {
+    const provider = new MockModelProvider([
+      mockResponse("First response"),
+      mockResponse("Second response"),
+    ]);
+
+    const runner = createRunner({ modelProvider: provider });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "chat",
+        name: "Chat",
+        systemPrompt: "You are a chat agent.",
+        model: { provider: "openai", name: "gpt-4o" },
+      })
+    );
+
+    // First message
+    await runner.invoke("chat", "Hello", { sessionId: "sess_1" });
+
+    // Second message — should include history
+    await runner.invoke("chat", "Follow up", { sessionId: "sess_1" });
+
+    // The second call should have history in messages
+    const secondCall = provider.calls[1];
+    // system + user("Hello") + assistant("First response") + user("Follow up")
+    expect(secondCall.messages.length).toBeGreaterThan(2);
+  });
+
+  it("handles tools in the invoke loop", async () => {
+    const provider = new MockModelProvider([
+      // First call: model wants to use a tool
+      {
+        text: "",
+        toolCalls: [{
+          id: "call_1",
+          name: "get_time",
+          args: {},
+        }],
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "tool-calls",
+      },
+      // Second call: model gives final answer
+      mockResponse("The current time is 10:42 PM."),
+    ]);
+
+    const getTime = defineTool({
+      name: "get_time",
+      description: "Get the current time",
+      input: z.object({}),
+      async execute() {
+        return { time: "10:42 PM" };
+      },
+    });
+
+    const runner = createRunner({
+      modelProvider: provider,
+      tools: [getTime],
+    });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "time-agent",
+        name: "Time Agent",
+        systemPrompt: "You tell people the time.",
+        model: { provider: "openai", name: "gpt-4o" },
+        tools: [{ type: "inline", name: "get_time" }],
+      })
+    );
+
+    const result = await runner.invoke("time-agent", "What time is it?");
+
+    expect(result.output).toBe("The current time is 10:42 PM.");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].name).toBe("get_time");
+    expect(result.toolCalls[0].output).toEqual({ time: "10:42 PM" });
+    expect(result.usage.totalTokens).toBe(45); // 15 + 30
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it("passes toolContext to tool execute", async () => {
+    const capturedCtx: Record<string, unknown> = {};
+
+    const provider = new MockModelProvider([
+      {
+        text: "",
+        toolCalls: [{ id: "call_1", name: "ctx_tool", args: {} }],
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "tool-calls",
+      },
+      mockResponse("Done"),
+    ]);
+
+    const ctxTool = defineTool({
+      name: "ctx_tool",
+      description: "Captures context",
+      input: z.object({}),
+      async execute(_input, ctx) {
+        capturedCtx.agentId = ctx.agentId;
+        capturedCtx.userId = ctx.userId;
+        capturedCtx.sessionId = ctx.sessionId;
+        return { ok: true };
+      },
+    });
+
+    const runner = createRunner({
+      modelProvider: provider,
+      tools: [ctxTool],
+    });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "ctx-agent",
+        name: "Ctx Agent",
+        systemPrompt: "test",
+        model: { provider: "openai", name: "gpt-4o" },
+        tools: [{ type: "inline", name: "ctx_tool" }],
+      })
+    );
+
+    await runner.invoke("ctx-agent", "test", {
+      sessionId: "sess_abc",
+      toolContext: { userId: "user_123" },
+    });
+
+    expect(capturedCtx.agentId).toBe("ctx-agent");
+    expect(capturedCtx.userId).toBe("user_123");
+    expect(capturedCtx.sessionId).toBe("sess_abc");
+  });
+
+  it("registers inline tools at runner creation", () => {
+    const tool = defineTool({
+      name: "my-tool",
+      description: "A tool",
+      input: z.object({}),
+      async execute() { return {}; },
+    });
+
+    const runner = createRunner({
+      modelProvider: new MockModelProvider(mockResponse("")),
+      tools: [tool],
+    });
+
+    const tools = runner.tools.list();
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe("my-tool");
+  });
+
+  it("injects context into messages", async () => {
+    const provider = new MockModelProvider(mockResponse("Based on the research..."));
+
+    const runner = createRunner({ modelProvider: provider });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "writer",
+        name: "Writer",
+        systemPrompt: "Write articles.",
+        model: { provider: "openai", name: "gpt-4o" },
+      })
+    );
+
+    // Pre-populate context
+    await runner.context.add("research", {
+      agentId: "researcher",
+      invocationId: "inv_001",
+      content: "MCP is a protocol for tool integration.",
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
+    await runner.invoke("writer", "Write about MCP", {
+      contextIds: ["research"],
+    });
+
+    // Check that context was injected into the system prompt
+    const systemMsg = provider.calls[0].messages[0];
+    expect(systemMsg.content).toContain('<context id="research">');
+    expect(systemMsg.content).toContain("MCP is a protocol");
+  });
+
+  it("writes output to context when contextWrite is enabled", async () => {
+    const provider = new MockModelProvider(mockResponse("Here are my findings."));
+
+    const runner = createRunner({ modelProvider: provider });
+
+    runner.registerAgent(
+      defineAgent({
+        id: "researcher",
+        name: "Researcher",
+        systemPrompt: "Research topics.",
+        model: { provider: "openai", name: "gpt-4o" },
+        contextWrite: true,
+      })
+    );
+
+    await runner.invoke("researcher", "Find info about AI", {
+      contextIds: ["project-x"],
+    });
+
+    const entries = await runner.context.get("project-x");
+    expect(entries).toHaveLength(1);
+    expect(entries[0].content).toBe("Here are my findings.");
+    expect(entries[0].agentId).toBe("researcher");
+  });
+});

@@ -1,0 +1,14 @@
+{
+  "name": "agent-runner-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.6.2",
+  "scripts": {
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "dev": "turbo dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0"
+  }
+}
