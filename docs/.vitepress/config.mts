@@ -43,6 +43,8 @@ export default defineConfig({
             { text: 'Error Handling & Retry', link: '/guide/error-handling' },
             { text: 'CI Eval Runs', link: '/guide/ci-evals' },
             { text: 'OpenTelemetry', link: '/guide/telemetry' },
+            { text: 'Templates', link: '/guide/templates' },
+            { text: 'Gymtext Migration', link: '/guide/gymtext-migration' },
           ],
         },
       ],
