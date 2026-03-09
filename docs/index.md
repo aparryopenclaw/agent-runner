@@ -10,7 +10,7 @@ hero:
       link: /guide/getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/AaronBidworthy/agent-runner
+      link: https://github.com/aparryopenclaw/agent-runner
 
 features:
   - icon: 📦

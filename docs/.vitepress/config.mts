@@ -11,7 +11,7 @@ export default defineConfig({
       { text: 'Guide', link: '/guide/getting-started' },
       { text: 'API', link: '/api/runner' },
       { text: 'Studio', link: '/studio/overview' },
-      { text: 'GitHub', link: 'https://github.com/AaronBidworthy/agent-runner' },
+      { text: 'GitHub', link: 'https://github.com/aparryopenclaw/agent-runner' },
     ],
     sidebar: {
       '/guide/': [
@@ -74,7 +74,7 @@ export default defineConfig({
       ],
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/AaronBidworthy/agent-runner' },
+      { icon: 'github', link: 'https://github.com/aparryopenclaw/agent-runner' },
     ],
     search: {
       provider: 'local',
