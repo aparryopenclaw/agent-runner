@@ -509,6 +509,32 @@ const runner = createRunner({
 
 WAL mode enabled by default, automatic migrations, full-text search on logs.
 
+### PostgreSQL Store
+
+For multi-server production deployments:
+
+```bash
+npm install @agent-runner/store-postgres
+```
+
+```typescript
+import { PostgresStore } from "@agent-runner/store-postgres";
+
+const runner = createRunner({
+  store: new PostgresStore("postgresql://user:pass@localhost:5432/mydb"),
+});
+
+// Or pass an existing pg.Pool for connection sharing:
+import pg from "pg";
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+const runner = createRunner({
+  store: new PostgresStore({ connection: pool }),
+});
+```
+
+Automatic migrations, JSONB for agent definitions, configurable table prefix, connection pooling.
+
 ## CLI
 
 ```bash
@@ -531,7 +557,8 @@ npx agent-runner studio
 |---|---|
 | `agent-runner` | Core SDK — createRunner, invoke, agents, tools, stores |
 | `@agent-runner/studio` | Development UI — agent editor, playground, evals dashboard |
-| `@agent-runner/store-sqlite` | SQLite store adapter for production use |
+| `@agent-runner/store-sqlite` | SQLite store adapter for single-server production |
+| `@agent-runner/store-postgres` | PostgreSQL store adapter for multi-server production |
 
 ## License
 
