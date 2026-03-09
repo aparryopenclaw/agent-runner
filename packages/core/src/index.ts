@@ -20,7 +20,7 @@ export type { MCPTool } from "./mcp/client-manager.js";
 
 // Eval
 export { runEval } from "./eval.js";
-export type { AssertionResult, EvalRunOptions } from "./eval.js";
+export type { AssertionResult, EvalRunOptions, CustomAssertionFn } from "./eval.js";
 
 // Errors
 export {

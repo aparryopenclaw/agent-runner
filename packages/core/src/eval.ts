@@ -23,6 +23,16 @@ export interface AssertionResult {
 /**
  * Options for running evals.
  */
+/**
+ * Custom assertion function signature.
+ * Return an AssertionResult with passed/score/reason.
+ */
+export type CustomAssertionFn = (
+  output: string,
+  input: string,
+  value: string | object
+) => AssertionResult | Promise<AssertionResult>;
+
 export interface EvalRunOptions {
   /** Override test cases (instead of using agent.eval.testCases) */
   testCases?: EvalTestCase[];
@@ -34,6 +44,8 @@ export interface EvalRunOptions {
   signal?: AbortSignal;
   /** Callback for progress updates */
   onProgress?: (completed: number, total: number, testCase: string) => void;
+  /** Custom assertion plugins keyed by name (used when type="custom" and value is the plugin name, or an object with { plugin, ... }) */
+  customAssertions?: Record<string, CustomAssertionFn>;
 }
 
 /**
@@ -210,12 +222,7 @@ async function runAssertion(
       );
 
     case "custom":
-      return {
-        type: "custom",
-        passed: false,
-        score: 0,
-        reason: "Custom assertions must be implemented by the user",
-      };
+      return runCustomAssertion(assertion, output, input, options);
 
     default:
       return {
@@ -224,6 +231,63 @@ async function runAssertion(
         score: 0,
         reason: `Unknown assertion type: ${assertion.type}`,
       };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Custom assertion runner
+// ═══════════════════════════════════════════════════════════════════
+
+async function runCustomAssertion(
+  assertion: EvalAssertion,
+  output: string,
+  input: string,
+  options: EvalRunOptions
+): Promise<AssertionResult> {
+  const customAssertions = options.customAssertions ?? {};
+
+  // Determine plugin name and value
+  let pluginName: string;
+  let pluginValue: string | object;
+
+  if (typeof assertion.value === "object" && assertion.value !== null && "plugin" in assertion.value) {
+    // { plugin: "myAssertion", ...rest }
+    const { plugin, ...rest } = assertion.value as { plugin: string; [key: string]: unknown };
+    pluginName = plugin;
+    pluginValue = rest;
+  } else if (typeof assertion.value === "string") {
+    // Just a plugin name with no extra config
+    pluginName = assertion.value;
+    pluginValue = assertion.value;
+  } else {
+    return {
+      type: "custom",
+      passed: false,
+      score: 0,
+      reason: 'Custom assertion value must be a string (plugin name) or an object with { plugin: "name", ... }',
+    };
+  }
+
+  const fn = customAssertions[pluginName];
+  if (!fn) {
+    return {
+      type: "custom",
+      passed: false,
+      score: 0,
+      reason: `Custom assertion plugin "${pluginName}" not found. Register it via customAssertions option.`,
+    };
+  }
+
+  try {
+    const result = await fn(output, input, pluginValue);
+    return { ...result, type: "custom" };
+  } catch (error) {
+    return {
+      type: "custom",
+      passed: false,
+      score: 0,
+      reason: `Custom assertion "${pluginName}" threw: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 

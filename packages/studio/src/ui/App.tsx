@@ -7,12 +7,14 @@ import { Playground } from "./pages/Playground";
 import { Sessions } from "./pages/Sessions";
 import { Logs } from "./pages/Logs";
 import { ContextBrowser } from "./pages/ContextBrowser";
+import { Evals } from "./pages/Evals";
 
 const NAV_ITEMS = [
   { to: "/agents", label: "Agents", icon: "🤖" },
   { to: "/tools", label: "Tools", icon: "🔧" },
   { to: "/playground", label: "Playground", icon: "▶️" },
   { to: "/sessions", label: "Sessions", icon: "💬" },
+  { to: "/evals", label: "Evals", icon: "🧪" },
   { to: "/context", label: "Context", icon: "📦" },
   { to: "/logs", label: "Logs", icon: "📋" },
 ];
@@ -31,6 +33,7 @@ export function App() {
             <Route path="/playground" element={<Playground />} />
             <Route path="/playground/:agentId" element={<Playground />} />
             <Route path="/sessions" element={<Sessions />} />
+            <Route path="/evals" element={<Evals />} />
             <Route path="/context" element={<ContextBrowser />} />
             <Route path="/logs" element={<Logs />} />
           </Routes>
